@@ -20,31 +20,28 @@ Fa le seguenti operazioni:
 - normalizza automaticamente se le bande sono in scala 0-10000,
 - calcola NDVI, SAVI, MSAVI, GCI, LAI, EVI,
 - calcola l'entropia di Shannon della distribuzione di EVI e il coefficiente di variazione (CV) di EVI,
-- mostra i risultati a video e permette di salvare i risultati (opzionale, decommentando).
+- mostra i risultati a video e permette di salvare i risultati.
 
 # Requisiti
-Installa i pacchetti necessari (solo la prima volta):
+Installa i pacchetti necessari:
 
 ```{r install-packages, eval=FALSE}
 install.packages(c("terra", "viridis"))
 ```
 
 # 1. Carica pacchetti e imposta i percorsi dei file
-Modifica i nomi dei file sotto se necessario (metti i .tif nella stessa cartella o usa percorsi completi).
+setwd()
+getwd()
+list.files()
 
 ```{r load-and-paths}
 library(terra)
 library(viridis)
 
-# MODIFICA solo questi percorsi se i tuoi file sono in una cartella diversa
-file_bing     <- "Satellite_HD_Bing_z18.tif"
-file_esri     <- "Satellite_HD_ESRI_z18.tif"
-file_sentinel <- "Sentinel-2_20250122.tif"
-
 # Leggi i raster
-r_bing     <- rast(file_bing)
-r_esri     <- rast(file_esri)
-r_sentinel <- rast(file_sentinel)
+r_bing     <- rast("Satellite_HD_Bing_z18.tif")
+r_esri     <- rast("Satellite_HD_ESRI_z18.tif")
+r_sentinel <- rast("Sentinel-2_20250122.tif")
 
 # Mostra informazioni di base
 r_bing
@@ -52,22 +49,17 @@ r_esri
 r_sentinel
 ```
 
-# 2. Selezione del rettangolo di interesse (interattiva o manuale)
-Metodo interattivo (RStudio): esegui la cella e clicca due punti opposti nella finestra grafica.
-
-Metodo manuale: commenta le righe con `locator()` e decommenta la parte con `pts <- list(...)` impostando le tue coordinate xmin/xmax/ymin/ymax.
+# 2. Selezione del rettangolo di interesse (interattiva)
+Metodo interattivo: esegui la cella e clicca due punti opposti nella finestra grafica.
 
 ```{r select-extent}
-# Usa r_bing come base per la selezione
+# Usa r_bing come base per la selezione (esegui in ambiente interattivo)
 plot(r_bing, main = "Clicca due punti opposti per definire il rettangolo")
 cat("Clicca PRIMO angolo, poi SECONDO angolo nella finestra grafica\n")
 pts <- tryCatch(locator(2), error = function(e) NULL)
 
-# ESEMPIO manuale (decommenta e modifica se non interattivo)
-# pts <- list(x = c(440000, 441000), y = c(4580000, 4581000))
-
 if (is.null(pts) || length(pts$x) < 2) {
-  stop("Selezione non riuscita. Usa ambiente interattivo o imposta manualmente pts come nell'esempio.")
+  stop("Selezione non riuscita. Usa ambiente interattivo.")
 }
 
 xmin_ <- min(pts$x); xmax_ <- max(pts$x)
@@ -76,10 +68,12 @@ e <- ext(xmin_, xmax_, ymin_, ymax_)
 
 # mostra il rettangolo selezionato
 rect(xmin_, ymin_, xmax_, ymax_, border = "red", lwd = 2)
+
+# e contiene l'extent selezionata
 e
 ```
 
-# 3. Ritaglio e maschera (semplice, usa l'extent selezionata)
+# 3. Ritaglio e maschera (usa l'extent selezionata)
 Qui ricostruiamo un poligono dalla extent e applichiamo mask dopo il crop.
 
 ```{r crop-mask}
@@ -96,16 +90,12 @@ r_esri_sel     <- mask(crop(r_esri, e), poly_esri)
 r_sentinel_sel <- mask(crop(r_sentinel, e), poly_sentinel)
 
 # Visualizzo i ritagli
-par(mfrow = c(1,3), mar = c(2,2,2,2))
 plot(r_bing_sel, main = "Bing ritagliato")
 plot(r_esri_sel, main = "ESRI ritagliato")
 plot(r_sentinel_sel, main = "Sentinel ritagliato")
-par(mfrow = c(1,1))
 ```
 
-Nota: questo esempio assume che i raster abbiano CRS compatibili tra loro. Se i tuoi raster hanno CRS diversi è necessario proiettare il poligono o i raster sullo stesso CRS (posso aggiungere la versione automatica se vuoi).
-
-# 4. Estrai le bande Sentinel e normalizza se necessario
+# 4. Estrai le bande Sentinel
 Controlla gli indici delle bande: per i file Sentinel frequentemente red = 4, nir = 8, green = 3, blue = 2. Se il tuo file è diverso, modifica questi numeri.
 
 ```{r bands-normalize}
@@ -130,18 +120,9 @@ if (global(red, "max", na.rm = TRUE)[[1]] > 1.5) red <- red / 10000
 if (global(nir, "max", na.rm = TRUE)[[1]] > 1.5) nir <- nir / 10000
 if (global(green, "max", na.rm = TRUE)[[1]] > 1.5) green <- green / 10000
 if (global(blue, "max", na.rm = TRUE)[[1]] > 1.5) blue <- blue / 10000
-
-# Visualizzo le bande (opzionale)
-par(mfrow = c(2,2), mar = c(2,2,2,2))
-plot(red, main = "Red")
-plot(nir, main = "NIR")
-plot(green, main = "Green")
-plot(blue, main = "Blue")
-par(mfrow = c(1,1))
 ```
 
-# 5. Calcolo indici (semplice e diretto)
-Calcoli passo passo, senza funzioni complesse.
+# 5. Calcolo indici 
 
 ```{r indici}
 # NDVI
@@ -165,31 +146,31 @@ names(gci) <- "GCI"
 evi <- 2.5 * (nir - red) / (nir + 6 * red - 7.5 * blue + 1)
 names(evi) <- "EVI"
 
-# LAI (semplice relazione empirica)
+# LAI 
 lai <- 3.618 * ndvi - 0.118
 names(lai) <- "LAI"
 ```
 
 # 6. Calcoli statistici su EVI: Shannon e coeff. di variazione (CV)
-Calcolo semplice su tutti i pixel non NA.
+Calcolo su tutti i pixel non NA.
 
 ```{r stats-evi}
 # Estrai valori EVI come vettore e rimuovi NA
 evi_vals <- values(evi)
 evi_vals <- evi_vals[!is.na(evi_vals)]
 
-# Entropia di Shannon su 50 classi
+# Entropia di Shannon su 50 classi (quanti pixel ci sono in ciascuna classe, quanto è uniforme o vario il tutto)
 h <- hist(evi_vals, breaks = 50, plot = FALSE)
 p <- h$counts / sum(h$counts)
 p_nonzero <- p[p > 0]
 shannon_evi <- -sum(p_nonzero * log(p_nonzero))
 
-# Coefficiente di variazione globale di EVI
-evi_mean <- mean(evi_vals)
-evi_sd   <- sd(evi_vals)
+# Coefficiente di variazione EVI (quanta variabilità c’è rispetto alla media)
+evi_mean <- mean(evi_vals) #valore EVI medio di tutta l’area
+evi_sd   <- sd(evi_vals) #quanto i valori si allontanano dalla media
 evi_cv   <- evi_sd / evi_mean
 
-# Stampo risultati
+# Risultati
 shannon_evi
 evi_mean
 evi_sd
@@ -197,7 +178,7 @@ evi_cv
 ```
 
 # 7. Visualizza tutti gli indici
-Mostro in plot facili da leggere.
+Mostro in plot 
 
 ```{r plot-indici}
 par(mfrow = c(3,3), mar = c(2,2,2,2))
@@ -221,7 +202,7 @@ text(text_x, text_y,
 par(mfrow = c(1,1))
 ```
 
-# 8. Salvataggio risultati (opzionale)
+# 8. Salvataggio risultati 
 Decommenta le righe seguenti se vuoi salvare i raster su disco.
 
 ```{r save-outputs, eval=FALSE}
@@ -232,8 +213,3 @@ Decommenta le righe seguenti se vuoi salvare i raster su disco.
 # writeRaster(evi, "EVI.tif", overwrite = TRUE)
 # writeRaster(lai, "LAI.tif", overwrite = TRUE)
 ```
-
-# 9. Note finali e suggerimenti rapidi
-- Controlla gli indici delle bande del tuo file Sentinel; se diversi modifica `red_idx`, `nir_idx`, `green_idx`, `blue_idx` sopra.  
-- Se i raster hanno CRS diversi, fammi sapere e ti aggiungo poche righe per proiettare il poligono o i raster nello stesso CRS.  
-- Questo documento è volutamente semplice e ridondante per essere facilmente comprensibile. Se vuoi, posso poi snellirlo o aggiungere commenti sulle formule.
