@@ -1,0 +1,232 @@
+# Analisi raster e dati fisiologici (Bromelie / Orchidee)
+# Script generato da R Markdown -> script R eseguibile in RStudio
+# Autore: MichelaSpina
+# Data: 2026-01-15
+
+
+# install.packages(c("terra", "viridis", "readr", "dplyr", "ggplot2", "knitr", "rmarkdown", "sf"))
+
+# Carica pacchetti
+library(terra)
+library(viridis)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Impostazioni iniziali
+setwd("C:/Users/Utente/OneDrive - Università di Napoli Federico II/Desktop/DATI X RSTUDIO MACHIN")
+
+# Nomi file 
+MachinBing <- rast("Satellite_HD_Bing_z18.tif")
+MachinESRI <- rast("Satellite_HD_ESRI_z18.tif")
+MachinSentinel <- rast("Sentinel-2_20250122.tif")
+
+Brom.data <- read_csv2("Bromelie datos.csv")
+Orch.data <- read_csv2("Orchidea datos.csv")
+
+
+# Mappa bande Sentinel (1-based index)
+band_map_sentinel <- list(blue = 2, green = 3, red = 4, nir = 8)
+
+# ritaglio interattivo
+# extent_coords <- c(xmin, xmax, ymin, ymax)
+extent_coords <- NULL  # NULL per selezione 
+
+# Funzioni di utilità
+clean_names <- function(df) {
+  names(df) <- gsub("\\s+", "_", names(df))
+  names(df) <- gsub("[°/]", "", names(df))
+  df
+}
+
+
+# Selezione estensione (interactive o da extent_coords oppure uso estensione completa)
+e <- NULL
+if (!is.null(extent_coords) && length(extent_coords) == 4) {
+  e <- ext(extent_coords[1], extent_coords[2], extent_coords[3], extent_coords[4])
+  cat("Usata estensione impostata manualmente.\n")
+} else {
+  if (!is.null(MachinBing) && interactive()) {
+    plot(MachinBing, main = "Clicca due punti opposti per definire il rettangolo")
+    cat("Clicca PRIMO angolo, poi SECONDO angolo nella finestra grafica\n")
+    pts <- tryCatch(locator(2), error = function(e) NULL)
+    if (!is.null(pts) && length(pts$x) >= 2) {
+      xmin_ <- min(pts$x); xmax_ <- max(pts$x)
+      ymin_ <- min(pts$y); ymax_ <- max(pts$y)
+      e <- ext(xmin_, xmax_, ymin_, ymax_)
+    } else {
+      message("Selezione interattiva fallita/annullata.")
+    }
+  }
+  if (is.null(e)) {
+    if (!is.null(MachinSentinel)) {
+      e <- ext(MachinSentinel)
+      message("Usata estensione completa del raster Sentinel.")
+    } else {
+      message("Nessuna estensione valida trovata; non posso procedere con il ritaglio.")
+    }
+  }
+}
+cat("Extent utilizzata:\n")
+print(e)
+
+# Ritaglio e maschera
+if (!is.null(e) && !is.null(MachinSentinel)) {
+  poly_coords <- cbind(
+    c(xmin(e), xmax(e), xmax(e), xmin(e), xmin(e)),
+    c(ymin(e), ymin(e), ymax(e), ymax(e), ymin(e))
+  )
+  poly <- vect(list(poly_coords), type = "polygons", crs = crs(MachinSentinel))
+  MachinBing     <- if (!is.null(MachinBing)) tryCatch(mask(crop(MachinBing, e), poly), error=function(e) NULL) else NULL
+  MachinESRI     <- if (!is.null(MachinESRI)) tryCatch(mask(crop(MachinESRI, e), poly), error=function(e) NULL) else NULL
+  MachinSentinel <- tryCatch(mask(crop(MachinSentinel, e), poly), error=function(e) NULL)
+} else {
+  MachinBing <- MachinESRI <- MachinSentinel <- NULL
+}
+
+# Plot di controllo 
+oldpar <- par(no.readonly = TRUE)
+on.exit(par(oldpar))
+par(mfrow = c(1,3), mar = c(2,2,2,2))
+if (!is.null(MachinBing)) try(plotRGB(MachinBing, main = "Bing ritagliato", stretch = "lin"), silent = TRUE)
+if (!is.null(MachinESRI)) try(plotRGB(MachinESRI, main = "ESRI ritagliato", stretch = "lin"), silent = TRUE)
+if (!is.null(MachinSentinel)) try(plotRGB(MachinSentinel, r = band_map_sentinel$red, g = band_map_sentinel$green, b = band_map_sentinel$blue, main = "Sentinel ritagliato", stretch = "lin"), silent = TRUE)
+par(oldpar)
+
+# Estrazione bande Sentinel
+red   <- MachinSentinel[[band_map_sentinel$red]]
+green <- MachinSentinel[[band_map_sentinel$green]]
+blue  <- MachinSentinel[[band_map_sentinel$blue]]
+nir   <- MachinSentinel[[band_map_sentinel$nir]]
+
+# Calcolo indici vegetazionali
+ndvi  <- (nir - red) / (nir + red); names(ndvi) <- "NDVI"
+L     <- 0.5
+savi  <- ((nir - red) / (nir + red + L)) * (1 + L); names(savi) <- "SAVI"
+msavi <- (2 * nir + 1 - sqrt((2 * nir + 1)^2 - 8 * (nir - red))) / 2; names(msavi) <- "MSAVI"
+gci   <- (nir / green) - 1; names(gci) <- "GCI"
+evi   <- 2.5 * ((nir - red) / (nir + 6 * red - 7.5 * blue + 1)); names(evi) <- "EVI"
+lai   <- 3.618 * ndvi - 0.118; names(lai) <- "LAI"
+
+indices_stack <- c(ndvi, savi, msavi, gci, evi, lai)
+
+# Statistiche EVI (Shannon e CV)
+evi_vals <- values(evi)
+evi_vals <- evi_vals[!is.na(evi_vals)]
+
+if (length(evi_vals) > 0) {
+  h <- hist(evi_vals, breaks = 50, plot = FALSE)
+  p <- h$counts / sum(h$counts)
+  p_nonzero <- p[p > 0]
+  shannon_evi <- -sum(p_nonzero * log(p_nonzero))
+  evi_mean <- mean(evi_vals)
+  evi_sd   <- sd(evi_vals)
+  evi_cv   <- ifelse(evi_mean == 0, NA, evi_sd / evi_mean)
+} else {
+  shannon_evi <- NA; evi_mean <- NA; evi_sd <- NA; evi_cv <- NA
+}
+
+cat("Shannon EVI:", shannon_evi, "\nEVI mean:", evi_mean, " EVI sd:", evi_sd, " EVI CV:", evi_cv, "\n")
+
+# Plottaggio indici
+par(mfrow = c(3,2), mar = c(3,3,2,2))
+plot(ndvi, main = "NDVI")
+plot(savi, main = "SAVI")
+plot(msavi, main = "MSAVI")
+plot(gci, main = "GCI", )
+plot(evi, main = "EVI")
+plot(lai, main = "LAI")
+par(mfrow = c(1,1))
+
+# Annotazione con statistiche 
+if (!is.null(MachinBing)) {
+  plot(MachinBing, main = "Annotazione statistiche EVI")
+} else if (!is.null(MachinSentinel)) {
+  try(plotRGB(MachinSentinel, r = red_idx, g = green_idx, b = blue_idx, main = "Sentinel - annotazione statistiche EVI"), silent = TRUE)
+}
+try(text(x = xmin(e) + 0.02 * (xmax(e) - xmin(e)),
+         y = ymin(e) + 0.9 * (ymax(e) - ymin(e)),
+         labels = paste0("Shannon EVI = ", round(shannon_evi, 3),
+                         "\nEVI mean = ", round(evi_mean, 3),
+                         "\nEVI sd = ", round(evi_sd, 3),
+                         "\nEVI CV = ", round(evi_cv, 3)),
+         adj = c(0, 0), cex = 0.9), silent = TRUE)
+
+
+
+# Esplorazione e regressioni con .csv data
+# Funzione per trovare colonna corrispondente
+find_col <- function(df, patterns) {
+  p <- names(df)[tolower(names(df)) %in% tolower(patterns)]
+  if (length(p) > 0) p[1] else NULL
+}
+
+
+if (!is.null(Brom.data)) {
+  stoma_candidates <- c("mean.stoma", "mean_stoma", "meanstoma", "stoma", "mean_stoma")
+  soil_candidates  <- c("mean_t_soil", "mean_T_soil", "meantsoil", "t_environment", "tenvironment")
+  b_stoma_col <- find_col(Brom.data, stoma_candidates)
+  b_soil_col  <- find_col(Brom.data, soil_candidates)
+  cat("Bromelie - stomacol:", b_stoma_col, " soilcol:", b_soil_col, "\n")
+  
+  if (!is.null(b_stoma_col)) {
+    p1 <- ggplot(Brom.data, aes_string(x = b_stoma_col)) +
+      geom_histogram(bins = 10, fill = "green", color = "black") +
+      theme_minimal() +
+      labs(title = "Bromelie: distribuzione densità stomatica", x = "Densità stomatica media", y = "Count")
+    print(p1)
+  } else message("Colonna stomatica Bromelie non trovata; controlla i nomi delle colonne.")
+  
+  if (!is.null(b_stoma_col) && !is.null(b_soil_col)) {
+    p3 <- ggplot(Brom.data, aes_string(x = b_soil_col, y = b_stoma_col)) +
+      geom_point(color = "blue", size = 3) +
+      geom_smooth(method = "lm", color = "red", se = TRUE) +
+      theme_minimal() +
+      labs(title = "Bromelie: stomi vs temperatura del suolo", x = "Temperatura del suolo (°C)", y = "Densità stomatica media")
+    print(p3)
+    mod_brom <- lm(as.formula(paste(b_stoma_col, "~", b_soil_col)), data = Brom.data)
+    cat("Summary mod_brom:\n"); print(summary(mod_brom))
+  } else message("Impossibile calcolare regressione Bromelie: colonne mancanti.")
+}
+
+if (!is.null(Orch.data)) {
+  stoma_candidates <- c("mean.stoma", "mean_stoma", "meanstoma", "stoma", "mean_stoma")
+  soil_candidates  <- c("mean_t_soil", "mean_T_soil", "meantsoil", "t_environment", "tenvironment")
+  o_stoma_col <- find_col(Orch.data, stoma_candidates)
+  o_soil_col  <- find_col(Orch.data, soil_candidates)
+  cat("Orchidee - stomacol:", o_stoma_col, " soilcol:", o_soil_col, "\n")
+  
+  if (!is.null(o_stoma_col)) {
+    p2 <- ggplot(Orch.data, aes_string(x = o_stoma_col)) +
+      geom_histogram(bins = 10, fill = "red", color = "black") +
+      theme_minimal() +
+      labs(title = "Orchidee: distribuzione densità stomatica", x = "Densità stomatica media", y = "Count")
+    print(p2)
+  } else message("Colonna stomatica Orchidee non trovata; controlla i nomi delle colonne.")
+  
+  if (!is.null(o_stoma_col) && !is.null(o_soil_col)) {
+    p4 <- ggplot(Orch.data, aes_string(x = o_soil_col, y = o_stoma_col)) +
+      geom_point(color = "purple", size = 3) +
+      geom_smooth(method = "lm", color = "orange", se = TRUE) +
+      theme_minimal() +
+      labs(title = "Orchidee: stomi vs temperatura del suolo", x = "Temperatura del suolo (°C)", y = "Densità stomatica media")
+    print(p4)
+    mod_orch <- lm(as.formula(paste(o_stoma_col, "~", o_soil_col)), data = Orch.data)
+    cat("Summary mod_orch:\n"); print(summary(mod_orch))
+  } else message("Impossibile calcolare regressione Orchidee: colonne mancanti.")
+}
+
+# Salvataggio
+# writeRaster(ndvi, "NDVI.tif", overwrite = TRUE)
+# writeRaster(evi, "EVI.tif", overwrite = TRUE)
+# writeRaster(lai, "LAI.tif", overwrite = TRUE)
+# if (exists("mod_brom")) saveRDS(mod_brom, "mod_brom.rds")
+# if (exists("mod_orch")) saveRDS(mod_orch, "mod_orch.rds")
+
+# Session info
+print(sessionInfo())
+
+# Fine script
+cat("Script completato.\n")
+
