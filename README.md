@@ -4,4 +4,5 @@ Questa repository contiene:
 
 Requisiti
 - R >= 4.0
-- Pacchetti: terra, viridis, readr, dplyr, ggplot2, rmarkdown, knitr (vedi header Rmd per installazione)
+- Pacchetti: terra, viridis, readr, dplyr, ggplot2, rmarkdown, knitr
+
